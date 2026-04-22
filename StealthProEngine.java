@@ -27,11 +27,17 @@ public class StealthProEngine extends JFrame {
 }
 
 class GameEngine extends JPanel implements ActionListener, KeyListener, MouseListener, MouseMotionListener {
-    private enum State { MENU, PLAYING, PAUSED, GAME_OVER, WIN }
+    private enum State { MENU, DIFFICULTY_SELECT, PLAYING, PAUSED, GAME_OVER, WIN }
     private State currentState = State.MENU;
+    
+    // Difficulty Settings
+    private double enemyDamageMult = 1.0;
+    private double enemyRotSpeedMult = 1.0;
+    private double enemyFovMult = 1.0;
+    private String selectedDiffName = "MEDIUM";
+
     private Timer gameTimer;
     private Random rnd = new Random();
-
     private Point2D.Double player = new Point2D.Double(120, 120);
     private double playerAngle = 0;
     private int playerHP = 100;
@@ -49,7 +55,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private List<Detector> detectors = new ArrayList<>();
     private List<Bullet> bullets = new ArrayList<>();
     private List<Particle> particles = new ArrayList<>();
-    
     private boolean[] keys = new boolean[65536];
     private Point mousePos = new Point(0, 0);
     private float pulse = 0f;
@@ -80,24 +85,49 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         addKeyListener(this);
         addMouseListener(this);
         addMouseMotionListener(this);
-        initLevel();
         gameTimer = new Timer(16, this);
         gameTimer.start();
     }
 
+    private void applyDifficulty(int mode) {
+        switch(mode) {
+            case 1: // EASY
+                enemyDamageMult = 0.5;
+                enemyRotSpeedMult = 0.6;
+                enemyFovMult = 0.7;
+                magsReserved = 8;
+                selectedDiffName = "EASY";
+                break;
+            case 2: // MEDIUM
+                enemyDamageMult = 1.0;
+                enemyRotSpeedMult = 1.0;
+                enemyFovMult = 1.0;
+                magsReserved = 5;
+                selectedDiffName = "MEDIUM";
+                break;
+            case 3: // HARD
+                enemyDamageMult = 1.8;
+                enemyRotSpeedMult = 1.6;
+                enemyFovMult = 1.3;
+                magsReserved = 3;
+                selectedDiffName = "HARD";
+                break;
+        }
+        startNewGame();
+    }
+
     private void initLevel() {
         detectors.clear();
-        detectors.add(new Detector(4*TILE_SIZE+40, 1*TILE_SIZE+40, 0.04));
-        detectors.add(new Detector(13*TILE_SIZE+40, 5*TILE_SIZE+40, 0.05));
-        detectors.add(new Detector(18*TILE_SIZE+40, 1*TILE_SIZE+40, 0.08));
-        detectors.add(new Detector(9*TILE_SIZE+40, 9*TILE_SIZE+40, -0.04));
+        detectors.add(new Detector(4*TILE_SIZE+40, 1*TILE_SIZE+40, 0.04 * enemyRotSpeedMult, enemyFovMult));
+        detectors.add(new Detector(13*TILE_SIZE+40, 5*TILE_SIZE+40, 0.05 * enemyRotSpeedMult, enemyFovMult));
+        detectors.add(new Detector(18*TILE_SIZE+40, 1*TILE_SIZE+40, 0.08 * enemyRotSpeedMult, enemyFovMult));
+        detectors.add(new Detector(9*TILE_SIZE+40, 9*TILE_SIZE+40, -0.04 * enemyRotSpeedMult, enemyFovMult));
     }
 
     public void startNewGame() {
         player = new Point2D.Double(120, 120);
         playerHP = 100;
         ammoInMag = MAX_MAG;
-        magsReserved = 5;
         reloadTimer = 0;
         bullets.clear();
         particles.clear();
@@ -108,10 +138,8 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
 
     private void update() {
         if (currentState != State.PLAYING) return;
-
         if (screenShake > 0) screenShake *= 0.9;
 
-        // Movement
         double speed = keys[KeyEvent.VK_SHIFT] ? 2.5 : 4.5;
         double dx = 0, dy = 0;
         if (keys[KeyEvent.VK_W]) dy -= speed;
@@ -129,7 +157,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         pulse += 0.07f;
         if (muzzleFlashTimer > 0) muzzleFlashTimer--;
 
-        // Reload Logic
         if (keys[KeyEvent.VK_R] && ammoInMag < MAX_MAG && magsReserved > 0 && reloadTimer == 0) {
             reloadTimer = RELOAD_DURATION;
         }
@@ -148,7 +175,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
 
         updateBullets();
         particles.removeIf(p -> !p.update());
-
         if (playerHP <= 0) { currentState = State.GAME_OVER; gameInProgress = false; }
         checkWinCondition();
     }
@@ -170,7 +196,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
                     }
                 }
             } else if (Point2D.distance(b.x, b.y, player.x, player.y) < 18) {
-                playerHP -= 10;
+                playerHP -= (int)(10 * enemyDamageMult);
                 screenShake = 8;
                 bIter.remove();
             }
@@ -247,10 +273,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
             g2.fillOval((int)b.x - 3, (int)b.y - 3, 6, 6);
         }
 
-        // Player
         g2.translate(player.x, player.y);
-        
-        // Reload UI (Circular Progress)
         if (reloadTimer > 0) {
             g2.setColor(new Color(255, 255, 255, 100));
             g2.setStroke(new BasicStroke(3));
@@ -274,18 +297,22 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private void drawHUD(Graphics2D g2) {
         if (!gameInProgress && currentState != State.PAUSED) return;
         
-        // Health bar
+        g2.setColor(new Color(10, 10, 20, 200));
+        g2.fillRoundRect(20, 20, 180, 40, 10, 10);
+        g2.setColor(Color.WHITE);
+        g2.setFont(new Font("Monospaced", Font.BOLD, 14));
+        g2.drawString("MODE: " + selectedDiffName, 35, 45);
+
         g2.setColor(new Color(10, 10, 20, 200));
         g2.fillRoundRect(20, getHeight()-90, 250, 70, 10, 10);
         g2.setColor(Color.WHITE);
         g2.setFont(new Font("SansSerif", Font.BOLD, 12));
-        g2.drawString("OPERATIVE INTEGRITY", 35, getHeight()-70);
+        g2.drawString("INTEGRITY", 35, getHeight()-70);
         g2.setColor(Color.DARK_GRAY);
         g2.fillRect(35, getHeight()-60, 200, 12);
         g2.setColor(playerHP > 30 ? new Color(0, 255, 150) : Color.RED);
         g2.fillRect(35, getHeight()-60, playerHP * 2, 12);
 
-        // Ammo
         g2.setColor(new Color(10, 10, 20, 200));
         g2.fillRoundRect(getWidth()-180, getHeight()-90, 160, 70, 10, 10);
         g2.setColor(ammoInMag < 4 ? Color.RED : Color.CYAN);
@@ -293,39 +320,37 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         g2.drawString(ammoInMag + " / " + (magsReserved * MAX_MAG), getWidth()-160, getHeight()-50);
         g2.setFont(new Font("SansSerif", Font.PLAIN, 11));
         g2.setColor(Color.GRAY);
-        g2.drawString("MAGS LEFT: " + magsReserved, getWidth()-160, getHeight()-70);
-        
-        if (reloadTimer > 0) {
-            g2.setColor(Color.YELLOW);
-            g2.setFont(new Font("SansSerif", Font.ITALIC, 14));
-            g2.drawString("RELOADING...", getWidth()/2 - 40, getHeight() - 120);
-        }
+        g2.drawString("RESERVE: " + magsReserved, getWidth()-160, getHeight()-70);
     }
 
     private void drawOverlay(Graphics2D g2) {
-        g2.setColor(new Color(0, 0, 0, 220));
+        g2.setColor(new Color(0, 0, 0, 225));
         g2.fillRect(0, 0, getWidth(), getHeight());
         
         g2.setColor(Color.CYAN);
-        g2.setFont(new Font("Monospaced", Font.BOLD, 55));
+        g2.setFont(new Font("Monospaced", Font.BOLD, 50));
         String head = "SHADOW PROTOCOL";
         if (currentState == State.PAUSED) head = "PAUSED";
+        if (currentState == State.DIFFICULTY_SELECT) head = "SELECT DIFFICULTY";
         if (currentState == State.GAME_OVER) head = "M.I.A.";
         if (currentState == State.WIN) head = "EXTRACTED";
         
-        g2.drawString(head, getWidth()/2 - g2.getFontMetrics().stringWidth(head)/2, 200);
+        g2.drawString(head, getWidth()/2 - g2.getFontMetrics().stringWidth(head)/2, 180);
 
-        g2.setFont(new Font("Monospaced", Font.PLAIN, 24));
-        int startY = 350;
+        g2.setFont(new Font("Monospaced", Font.PLAIN, 22));
+        int startY = 320;
         
-        // Menu Options
         if (currentState == State.MENU) {
-            drawMenuOption(g2, "[ENTER] START MISSION", startY);
+            drawMenuOption(g2, "[ENTER] INITIALIZE MISSION", startY);
+        } else if (currentState == State.DIFFICULTY_SELECT) {
+            drawMenuOption(g2, "[1] EASY - LOW SECURITY", startY);
+            drawMenuOption(g2, "[2] MEDIUM - STANDARD OPS", startY + 50);
+            drawMenuOption(g2, "[3] HARD - ELITE DEFENSE", startY + 100);
         } else if (currentState == State.PAUSED) {
-            drawMenuOption(g2, "[P] RESUME MISSION", startY);
-            drawMenuOption(g2, "[ENTER] NEW MISSION (RESET)", startY + 50);
+            drawMenuOption(g2, "[P] RESUME OPS", startY);
+            drawMenuOption(g2, "[ENTER] RE-DEPLOY (RESET)", startY + 50);
         } else {
-            drawMenuOption(g2, "[ENTER] RE-DEPLOY", startY);
+            drawMenuOption(g2, "[ENTER] NEW MISSION", startY);
         }
     }
 
@@ -339,7 +364,15 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (e.getKeyCode() < keys.length) keys[e.getKeyCode()] = true; 
         
         if (e.getKeyCode() == KeyEvent.VK_ENTER) {
-            startNewGame();
+            if (currentState == State.MENU || currentState == State.GAME_OVER || currentState == State.WIN || currentState == State.PAUSED) {
+                currentState = State.DIFFICULTY_SELECT;
+            }
+        }
+        
+        if (currentState == State.DIFFICULTY_SELECT) {
+            if (e.getKeyCode() == KeyEvent.VK_1) applyDifficulty(1);
+            if (e.getKeyCode() == KeyEvent.VK_2) applyDifficulty(2);
+            if (e.getKeyCode() == KeyEvent.VK_3) applyDifficulty(3);
         }
         
         if (e.getKeyCode() == KeyEvent.VK_P) {
@@ -352,10 +385,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     @Override public void mousePressed(MouseEvent e) {
         if (currentState == State.PLAYING && ammoInMag > 0 && reloadTimer <= 0) {
             bullets.add(new Bullet(player.x, player.y, playerAngle, true));
-            ammoInMag--;
-            muzzleFlashTimer = 3;
-            fireFromRight = !fireFromRight;
-            screenShake = 5;
+            ammoInMag--; muzzleFlashTimer = 3; fireFromRight = !fireFromRight; screenShake = 5;
         }
     }
     @Override public void mouseMoved(MouseEvent e) { mousePos = e.getPoint(); }
@@ -372,8 +402,7 @@ class Particle {
     Color color;
     public Particle(double x, double y, Color c) {
         this.x = x; this.y = y; this.color = c;
-        this.dx = (Math.random()-0.5)*6;
-        this.dy = (Math.random()-0.5)*6;
+        this.dx = (Math.random()-0.5)*6; this.dy = (Math.random()-0.5)*6;
     }
     public boolean update() { x+=dx; y+=dy; life--; return life > 0; }
     public void draw(Graphics2D g) {
@@ -390,12 +419,14 @@ class Bullet {
 }
 
 class Detector {
-    double x, y, angle, rotSpeed;
+    double x, y, angle, rotSpeed, fovMult;
     int hp = 100, fireRate = 0;
     boolean playerSpotted = false;
     Path2D lastVisionShape;
 
-    public Detector(double x, double y, double rs) { this.x=x; this.y=y; this.rotSpeed=rs; }
+    public Detector(double x, double y, double rs, double fovM) { 
+        this.x=x; this.y=y; this.rotSpeed=rs; this.fovMult = fovM;
+    }
 
     public void update(Point2D.Double player, int[][] map, int tileSize) {
         if (lastVisionShape != null && lastVisionShape.contains(player)) {
@@ -418,7 +449,7 @@ class Detector {
     private Path2D calculateRaycast(int[][] map, int tileSize) {
         Path2D path = new Path2D.Double();
         path.moveTo(x, y);
-        double fov = Math.toRadians(60);
+        double fov = Math.toRadians(55 * fovMult);
         for (double i = -fov/2; i <= fov/2; i += 0.05) {
             double rA = angle + i;
             double rX = x, rY = y;
