@@ -8,8 +8,7 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * SHADOW PROTOCOL: ELITE EDITION
- * Complete Source Code
+ * SHADOW PROTOCOL: ELITE EDITION (LASER VARIANT)
  */
 public class StealthProEngine extends JFrame {
     public StealthProEngine() {
@@ -34,7 +33,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private enum State { MENU, DIFFICULTY_SELECT, PLAYING, PAUSED, GAME_OVER, WIN }
     private State currentState = State.MENU;
     
-    // Difficulty Settings
     private double enemyDamageMult = 1.0;
     private double enemyRotSpeedMult = 1.0;
     private double enemyFovMult = 1.0;
@@ -46,10 +44,8 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private double screenShake = 0;
     private boolean gameInProgress = false;
 
-    // Camera Smoothing
     private double camX = 0, camY = 0;
 
-    // Combat Systems
     private final int MAX_MAG = 12;
     private int ammoInMag = 12;
     private int magsReserved = 5;
@@ -125,7 +121,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (currentState != State.PLAYING) return;
         if (screenShake > 0) screenShake *= 0.9;
 
-        // Player Movement
         double speed = keys[KeyEvent.VK_SHIFT] ? 2.5 : 4.5;
         double moveX = 0, moveY = 0;
         if (keys[KeyEvent.VK_W]) moveY -= 1;
@@ -142,7 +137,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (!isColliding(player.x + moveX, player.y, 14)) player.x += moveX;
         if (!isColliding(player.x, player.y + moveY, 14)) player.y += moveY;
 
-        // Camera Lerp
         double targetCamX = getWidth() / 2.0 - player.x;
         double targetCamY = getHeight() / 2.0 - player.y;
         camX += (targetCamX - camX) * 0.15;
@@ -152,19 +146,22 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         pulse += 0.07f;
         if (muzzleFlashTimer > 0) muzzleFlashTimer--;
 
-        // Reload Logic
         if (keys[KeyEvent.VK_R] && ammoInMag < MAX_MAG && magsReserved > 0 && reloadTimer == 0) reloadTimer = RELOAD_DURATION;
         if (reloadTimer > 0) {
             reloadTimer--;
             if (reloadTimer == 0) { ammoInMag = MAX_MAG; magsReserved--; }
         }
 
-        // Enemy Update
+        // Enemy Laser Logic
         for (Detector d : detectors) {
             d.update(player, MAP, TILE_SIZE);
-            if (d.canShoot()) {
-                bullets.add(new Bullet(d.x, d.y, d.angle, false));
-                screenShake = 4;
+            if (d.playerSpotted && d.lastVisionShape != null && d.lastVisionShape.contains(player)) {
+                // Apply laser burn damage
+                if (rnd.nextInt(5) == 0) { // Damage frequency
+                    playerHP -= (int)(4 * enemyDamageMult);
+                    screenShake = 5;
+                    particles.add(new Particle(player.x, player.y, Color.RED));
+                }
             }
         }
 
@@ -180,18 +177,12 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
             Bullet b = bIter.next();
             b.move();
             if (isColliding(b.x, b.y, 3)) { bIter.remove(); continue; }
-            if (b.isPlayerBullet) {
-                for (Detector d : detectors) {
-                    if (Point2D.distance(b.x, b.y, d.x, d.y) < 22) {
-                        d.hp -= 35;
-                        spawnExplosion(d.x, d.y, Color.ORANGE);
-                        bIter.remove(); break;
-                    }
+            for (Detector d : detectors) {
+                if (Point2D.distance(b.x, b.y, d.x, d.y) < 22) {
+                    d.hp -= 35;
+                    spawnExplosion(d.x, d.y, Color.ORANGE);
+                    bIter.remove(); break;
                 }
-            } else if (Point2D.distance(b.x, b.y, player.x, player.y) < 18) {
-                playerHP -= (int)(10 * enemyDamageMult);
-                screenShake = 10;
-                bIter.remove();
             }
         }
         detectors.removeIf(d -> d.hp <= 0);
@@ -254,11 +245,17 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
                 g2.fill(d.lastVisionShape);
             }
             
-            // LASER SIGHT
+            // ELITE LASER DRAWING
             if (d.playerSpotted) {
+                // Laser Outer Glow
+                g2.setStroke(new BasicStroke(5.0f));
+                g2.setColor(new Color(255, 0, 0, 100));
+                g2.drawLine((int)d.x, (int)d.y, (int)player.x, (int)player.y);
+                
+                // Laser Inner Core (Flickering)
                 g2.setStroke(new BasicStroke(1.5f));
-                int laserAlpha = (int)(150 + Math.sin(pulse * 15) * 100);
-                g2.setColor(new Color(255, 0, 0, Math.max(0, Math.min(255, laserAlpha))));
+                int laserAlpha = (int)(180 + Math.sin(pulse * 25) * 75);
+                g2.setColor(new Color(255, 255, 255, Math.max(0, Math.min(255, laserAlpha))));
                 g2.drawLine((int)d.x, (int)d.y, (int)player.x, (int)player.y);
             }
 
@@ -269,11 +266,10 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         }
 
         for (Bullet b : bullets) {
-            g2.setColor(b.isPlayerBullet ? Color.CYAN : Color.RED);
+            g2.setColor(Color.CYAN);
             g2.fillOval((int)b.x - 3, (int)b.y - 3, 6, 6);
         }
 
-        // Draw Player
         g2.translate(player.x, player.y);
         if (reloadTimer > 0) {
             g2.setColor(new Color(0, 255, 255, 150));
@@ -298,43 +294,34 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     }
 
     private void drawPostProcessing(Graphics2D g2) {
-        // Vignette
         float[] dist = {0.0f, 1.0f};
         Color[] colors = {new Color(0,0,0,0), new Color(0,0,0,180)};
         RadialGradientPaint p = new RadialGradientPaint(getWidth()/2f, getHeight()/2f, getWidth()/1.2f, dist, colors);
         g2.setPaint(p);
         g2.fillRect(0,0,getWidth(),getHeight());
-
-        // Scanlines
         g2.setColor(new Color(255, 255, 255, 15));
         for(int i=0; i<getHeight(); i+=4) g2.drawLine(0, i, getWidth(), i);
     }
 
     private void drawHUD(Graphics2D g2) {
         if (!gameInProgress && currentState != State.PAUSED) return;
-        
         g2.setFont(new Font("Monospaced", Font.BOLD, 12));
-        
-        // Health / Integrity Bar
         int hbY = getHeight() - 90;
         g2.setColor(new Color(0, 20, 40, 200));
         g2.fillRoundRect(20, hbY, 260, 70, 10, 10);
         g2.setColor(Color.CYAN);
         g2.drawRoundRect(20, hbY, 260, 70, 10, 10);
-
         g2.drawString("SYS_INTEGRITY", 35, hbY + 20);
         g2.setColor(Color.DARK_GRAY);
         g2.fillRect(35, hbY + 30, 200, 12);
         g2.setColor(playerHP > 30 ? new Color(0, 255, 150) : Color.RED);
-        g2.fillRect(35, hbY + 30, playerHP * 2, 12);
+        g2.fillRect(35, hbY + 30, Math.max(0, playerHP * 2), 12);
 
-        // Ammo Display
         int amX = getWidth() - 200;
         g2.setColor(new Color(0, 20, 40, 200));
         g2.fillRoundRect(amX, hbY, 180, 70, 10, 10);
         g2.setColor(Color.CYAN);
         g2.drawRoundRect(amX, hbY, 180, 70, 10, 10);
-        
         g2.drawString("ORDNANCE", amX + 15, hbY + 20);
         g2.setFont(new Font("Monospaced", Font.BOLD, 22));
         g2.drawString(ammoInMag + " / " + (magsReserved * MAX_MAG), amX + 15, hbY + 50);
@@ -343,7 +330,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private void drawOverlay(Graphics2D g2) {
         g2.setColor(new Color(0, 5, 15, 230));
         g2.fillRect(0, 0, getWidth(), getHeight());
-        
         g2.setColor(Color.CYAN);
         g2.setFont(new Font("Monospaced", Font.BOLD, 50));
         String head = "SHADOW PROTOCOL";
@@ -351,9 +337,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (currentState == State.DIFFICULTY_SELECT) head = "SELECT DIFFICULTY";
         if (currentState == State.GAME_OVER) head = "UNIT_LOST";
         if (currentState == State.WIN) head = "MISSION_COMPLETE";
-        
         g2.drawString(head, getWidth()/2 - g2.getFontMetrics().stringWidth(head)/2, 200);
-
         g2.setFont(new Font("Monospaced", Font.PLAIN, 18));
         g2.setColor(Color.WHITE);
         String sub = "[ENTER] TO INITIALIZE";
@@ -383,7 +367,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     @Override public void keyTyped(KeyEvent e) {}
     @Override public void mousePressed(MouseEvent e) {
         if (currentState == State.PLAYING && ammoInMag > 0 && reloadTimer <= 0) {
-            bullets.add(new Bullet(player.x, player.y, playerAngle, true));
+            bullets.add(new Bullet(player.x, player.y, playerAngle));
             ammoInMag--; muzzleFlashTimer = 3; fireFromRight = !fireFromRight; screenShake = 6;
         }
     }
@@ -409,13 +393,13 @@ class Particle {
 }
 
 class Bullet {
-    double x, y, angle, speed = 20.0; boolean isPlayerBullet;
-    public Bullet(double x, double y, double a, boolean p) { this.x=x; this.y=y; this.angle=a; this.isPlayerBullet=p; }
+    double x, y, angle, speed = 20.0;
+    public Bullet(double x, double y, double a) { this.x=x; this.y=y; this.angle=a; }
     public void move() { x += Math.cos(angle)*speed; y += Math.sin(angle)*speed; }
 }
 
 class Detector {
-    double x, y, angle, rotSpeed, fovMult; int hp = 100, fireRate = 0;
+    double x, y, angle, rotSpeed, fovMult; int hp = 100;
     boolean playerSpotted = false; Path2D lastVisionShape;
     public Detector(double x, double y, double rs, double fovM) { this.x=x; this.y=y; this.rotSpeed=rs; this.fovMult = fovM; }
 
@@ -427,13 +411,12 @@ class Detector {
             while (diff < -Math.PI) diff += Math.PI * 2;
             while (diff > Math.PI) diff -= Math.PI * 2;
             angle += diff * 0.12; 
-            if (fireRate > 0) fireRate--;
         } else {
-            playerSpotted = false; angle += rotSpeed; fireRate = 12; 
+            playerSpotted = false; angle += rotSpeed; 
         }
         lastVisionShape = calculateRaycast(map, tileSize);
     }
-    public boolean canShoot() { if (playerSpotted && fireRate <= 0) { fireRate = 45; return true; } return false; }
+
     private Path2D calculateRaycast(int[][] map, int tileSize) {
         Path2D path = new Path2D.Double(); path.moveTo(x, y);
         double fov = Math.toRadians(55 * fovMult);
