@@ -30,7 +30,6 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private enum State { MENU, DIFFICULTY_SELECT, PLAYING, PAUSED, GAME_OVER, WIN }
     private State currentState = State.MENU;
     
-    // Difficulty Settings
     private double enemyDamageMult = 1.0;
     private double enemyRotSpeedMult = 1.0;
     private double enemyFovMult = 1.0;
@@ -44,6 +43,9 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private double screenShake = 0;
     private boolean gameInProgress = false;
 
+    // Camera smoothing variables
+    private double camX = 0, camY = 0;
+
     private final int MAX_MAG = 12;
     private int ammoInMag = 12;
     private int magsReserved = 5;
@@ -55,7 +57,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private List<Detector> detectors = new ArrayList<>();
     private List<Bullet> bullets = new ArrayList<>();
     private List<Particle> particles = new ArrayList<>();
-    private boolean[] keys = new boolean[65536];
+    private boolean[] keys = new boolean[256]; // Optimization: reduced size
     private Point mousePos = new Point(0, 0);
     private float pulse = 0f;
     private final int TILE_SIZE = 80;
@@ -91,26 +93,17 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
 
     private void applyDifficulty(int mode) {
         switch(mode) {
-            case 1: // EASY
-                enemyDamageMult = 0.5;
-                enemyRotSpeedMult = 0.6;
-                enemyFovMult = 0.7;
-                magsReserved = 8;
-                selectedDiffName = "EASY";
+            case 1: 
+                enemyDamageMult = 0.5; enemyRotSpeedMult = 0.6; enemyFovMult = 0.7;
+                magsReserved = 8; selectedDiffName = "EASY";
                 break;
-            case 2: // MEDIUM
-                enemyDamageMult = 1.0;
-                enemyRotSpeedMult = 1.0;
-                enemyFovMult = 1.0;
-                magsReserved = 5;
-                selectedDiffName = "MEDIUM";
+            case 2: 
+                enemyDamageMult = 1.0; enemyRotSpeedMult = 1.0; enemyFovMult = 1.0;
+                magsReserved = 5; selectedDiffName = "MEDIUM";
                 break;
-            case 3: // HARD
-                enemyDamageMult = 1.8;
-                enemyRotSpeedMult = 1.6;
-                enemyFovMult = 1.3;
-                magsReserved = 3;
-                selectedDiffName = "HARD";
+            case 3: 
+                enemyDamageMult = 1.8; enemyRotSpeedMult = 1.6; enemyFovMult = 1.3;
+                magsReserved = 3; selectedDiffName = "HARD";
                 break;
         }
         startNewGame();
@@ -126,6 +119,8 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
 
     public void startNewGame() {
         player = new Point2D.Double(120, 120);
+        camX = getWidth()/2 - player.x;
+        camY = getHeight()/2 - player.y;
         playerHP = 100;
         ammoInMag = MAX_MAG;
         reloadTimer = 0;
@@ -140,18 +135,32 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (currentState != State.PLAYING) return;
         if (screenShake > 0) screenShake *= 0.9;
 
+        // Smooth normalized movement
         double speed = keys[KeyEvent.VK_SHIFT] ? 2.5 : 4.5;
-        double dx = 0, dy = 0;
-        if (keys[KeyEvent.VK_W]) dy -= speed;
-        if (keys[KeyEvent.VK_S]) dy += speed;
-        if (keys[KeyEvent.VK_A]) dx -= speed;
-        if (keys[KeyEvent.VK_D]) dx += speed;
+        double moveX = 0, moveY = 0;
+        if (keys[KeyEvent.VK_W]) moveY -= 1;
+        if (keys[KeyEvent.VK_S]) moveY += 1;
+        if (keys[KeyEvent.VK_A]) moveX -= 1;
+        if (keys[KeyEvent.VK_D]) moveX += 1;
 
-        if (!isColliding(player.x + dx, player.y, 14)) player.x += dx;
-        if (!isColliding(player.x, player.y + dy, 14)) player.y += dy;
+        if (moveX != 0 && moveY != 0) {
+            double length = Math.sqrt(moveX * moveX + moveY * moveY);
+            moveX = (moveX / length) * speed;
+            moveY = (moveY / length) * speed;
+        } else {
+            moveX *= speed;
+            moveY *= speed;
+        }
 
-        int camX = (int)(getWidth() / 2 - player.x);
-        int camY = (int)(getHeight() / 2 - player.y);
+        if (!isColliding(player.x + moveX, player.y, 14)) player.x += moveX;
+        if (!isColliding(player.x, player.y + moveY, 14)) player.y += moveY;
+
+        // Smooth Camera Follow (Lerp)
+        double targetCamX = getWidth() / 2 - player.x;
+        double targetCamY = getHeight() / 2 - player.y;
+        camX += (targetCamX - camX) * 0.15;
+        camY += (targetCamY - camY) * 0.15;
+
         playerAngle = Math.atan2((mousePos.y - camY) - player.y, (mousePos.x - camX) - player.x);
 
         pulse += 0.07f;
@@ -231,10 +240,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
             g2.translate((rnd.nextDouble()-0.5)*screenShake, (rnd.nextDouble()-0.5)*screenShake);
         }
 
-        int camX = (int)(getWidth() / 2 - player.x);
-        int camY = (int)(getHeight() / 2 - player.y);
-
-        g2.translate(camX, camY);
+        g2.translate((int)camX, (int)camY);
         if (gameInProgress || currentState == State.PAUSED) drawWorld(g2);
         g2.setTransform(oldAt);
 
@@ -361,26 +367,30 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
 
     @Override public void actionPerformed(ActionEvent e) { update(); repaint(); }
     @Override public void keyPressed(KeyEvent e) { 
-        if (e.getKeyCode() < keys.length) keys[e.getKeyCode()] = true; 
+        int code = e.getKeyCode();
+        if (code < keys.length) keys[code] = true; 
         
-        if (e.getKeyCode() == KeyEvent.VK_ENTER) {
+        if (code == KeyEvent.VK_ENTER) {
             if (currentState == State.MENU || currentState == State.GAME_OVER || currentState == State.WIN || currentState == State.PAUSED) {
                 currentState = State.DIFFICULTY_SELECT;
             }
         }
         
         if (currentState == State.DIFFICULTY_SELECT) {
-            if (e.getKeyCode() == KeyEvent.VK_1) applyDifficulty(1);
-            if (e.getKeyCode() == KeyEvent.VK_2) applyDifficulty(2);
-            if (e.getKeyCode() == KeyEvent.VK_3) applyDifficulty(3);
+            if (code == KeyEvent.VK_1) applyDifficulty(1);
+            if (code == KeyEvent.VK_2) applyDifficulty(2);
+            if (code == KeyEvent.VK_3) applyDifficulty(3);
         }
         
-        if (e.getKeyCode() == KeyEvent.VK_P) {
+        if (code == KeyEvent.VK_P) {
             if (currentState == State.PLAYING) currentState = State.PAUSED;
             else if (currentState == State.PAUSED && gameInProgress) currentState = State.PLAYING;
         }
     }
-    @Override public void keyReleased(KeyEvent e) { if (e.getKeyCode() < keys.length) keys[e.getKeyCode()] = false; }
+    @Override public void keyReleased(KeyEvent e) { 
+        int code = e.getKeyCode();
+        if (code < keys.length) keys[code] = false; 
+    }
     @Override public void keyTyped(KeyEvent e) {}
     @Override public void mousePressed(MouseEvent e) {
         if (currentState == State.PLAYING && ammoInMag > 0 && reloadTimer <= 0) {
@@ -431,7 +441,13 @@ class Detector {
     public void update(Point2D.Double player, int[][] map, int tileSize) {
         if (lastVisionShape != null && lastVisionShape.contains(player)) {
             playerSpotted = true;
-            angle = Math.atan2(player.y - y, player.x - x);
+            double targetAngle = Math.atan2(player.y - y, player.x - x);
+            // Smoothly rotate toward player instead of snapping
+            double diff = targetAngle - angle;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            angle += diff * 0.1;
+            
             if (fireRate > 0) fireRate--;
         } else {
             playerSpotted = false;
