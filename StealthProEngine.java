@@ -9,7 +9,7 @@ import java.util.Random;
 
 public class StealthProEngine extends JFrame {
     public StealthProEngine() {
-        setTitle("SHADOW PROTOCOL: ELITE EDITION");
+        setTitle("SHADOW PROTOCOL: FIELD ACQUISITION");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setResizable(false);
         GameEngine engine = new GameEngine();
@@ -25,7 +25,22 @@ public class StealthProEngine extends JFrame {
 
 class GameEngine extends JPanel implements ActionListener, KeyListener, MouseListener, MouseMotionListener {
     private enum State { MENU, DIFFICULTY_SELECT, PLAYING, PAUSED, GAME_OVER, WIN }
+    
+    enum Weapon { 
+        PISTOL("USP-S", 12, 35, 20, 15, Color.CYAN), 
+        DUAL_GUNS("ELITE_DUALS", 30, 30, 22, 7, Color.GREEN), 
+        M16("M16_A4", 40, 45, 26, 5, Color.ORANGE), 
+        SNIPER("BARRETT_50", 5, 250, 48, 45, Color.YELLOW);
+
+        String name; int magSize, damage, speed, fireDelay; Color bulletColor;
+        Weapon(String n, int m, int d, int s, int f, Color c) {
+            name = n; magSize = m; damage = d; speed = s; fireDelay = f; bulletColor = c;
+        }
+    }
+
     private State currentState = State.MENU;
+    private Weapon currentWeapon = Weapon.PISTOL;
+    private Weapon rewardWeapon = Weapon.PISTOL; // Weapon waiting in the crate
     
     private double enemyDamageMult = 1.0;
     private double enemyRotSpeedMult = 1.0;
@@ -33,30 +48,28 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private Timer gameTimer;
     private Random rnd = new Random();
     private Point2D.Double player = new Point2D.Double(120, 120);
+    private Point2D.Double weaponDropPos = new Point2D.Double(10 * 80, 7 * 80);
+    private boolean weaponAcquired = false;
+
     private double playerAngle = 0;
     private int playerHP = 100;
     private double screenShake = 0;
     private boolean gameInProgress = false;
     private double camX = 0, camY = 0;
 
-    // Weapon Systems
-    private final int MAX_MAG = 12;
     private int ammoInMag = 12;
     private int magsReserved = 5;
     private int reloadTimer = 0;
-    private final int RELOAD_DURATION = 70;
+    private int shootCooldown = 0;
+    private final int RELOAD_DURATION = 60;
     private boolean fireFromRight = true;
     private int muzzleFlashTimer = 0;
     
-    // Sniper Logic
-    private boolean hasSniper = false;
-    private Point2D.Double sniperPickup = new Point2D.Double(10 * 80, 7 * 80); // Center-ish
-    private boolean pickupSpawned = true;
-
     private List<Detector> detectors = new ArrayList<>();
     private List<Bullet> bullets = new ArrayList<>();
     private List<Particle> particles = new ArrayList<>();
     private boolean[] keys = new boolean[256]; 
+    private boolean isMousePressed = false;
     private Point mousePos = new Point(0, 0);
     private float pulse = 0f;
     private final int TILE_SIZE = 80;
@@ -92,26 +105,32 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
 
     private void applyDifficulty(int mode) {
         switch(mode) {
-            case 1: enemyDamageMult = 0.5; enemyRotSpeedMult = 0.6; enemyFovMult = 0.7; magsReserved = 8; break;
-            case 2: enemyDamageMult = 1.0; enemyRotSpeedMult = 1.0; enemyFovMult = 1.0; magsReserved = 5; break;
-            case 3: enemyDamageMult = 1.8; enemyRotSpeedMult = 1.6; enemyFovMult = 1.3; magsReserved = 3; break;
+            case 1: // EASY
+                enemyDamageMult = 0.5; enemyRotSpeedMult = 0.6; enemyFovMult = 0.7; 
+                magsReserved = 8; rewardWeapon = Weapon.DUAL_GUNS; break;
+            case 2: // MEDIUM
+                enemyDamageMult = 1.0; enemyRotSpeedMult = 1.0; enemyFovMult = 1.0; 
+                magsReserved = 5; rewardWeapon = Weapon.M16; break;
+            case 3: // HARD
+                enemyDamageMult = 1.8; enemyRotSpeedMult = 1.6; enemyFovMult = 1.3; 
+                magsReserved = 3; rewardWeapon = Weapon.SNIPER; break;
         }
         startNewGame();
     }
 
-    private void initLevel() {
+    public void startNewGame() {
+        player = new Point2D.Double(120, 120);
+        playerHP = 100; 
+        currentWeapon = Weapon.PISTOL; // Always start with Pistol
+        weaponAcquired = false;
+        ammoInMag = currentWeapon.magSize; 
+        reloadTimer = 0; shootCooldown = 0;
+        bullets.clear(); particles.clear();
         detectors.clear();
         detectors.add(new Detector(4*TILE_SIZE+40, 1*TILE_SIZE+40, 0.04 * enemyRotSpeedMult, enemyFovMult));
         detectors.add(new Detector(13*TILE_SIZE+40, 5*TILE_SIZE+40, 0.05 * enemyRotSpeedMult, enemyFovMult));
         detectors.add(new Detector(18*TILE_SIZE+40, 1*TILE_SIZE+40, 0.08 * enemyRotSpeedMult, enemyFovMult));
         detectors.add(new Detector(9*TILE_SIZE+40, 9*TILE_SIZE+40, -0.04 * enemyRotSpeedMult, enemyFovMult));
-    }
-
-    public void startNewGame() {
-        player = new Point2D.Double(120, 120);
-        playerHP = 100; ammoInMag = MAX_MAG; reloadTimer = 0; hasSniper = false; pickupSpawned = true;
-        bullets.clear(); particles.clear();
-        initLevel();
         gameInProgress = true;
         currentState = State.PLAYING;
     }
@@ -119,17 +138,18 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private void update() {
         if (currentState != State.PLAYING) return;
         if (screenShake > 0) screenShake *= 0.9;
+        if (shootCooldown > 0) shootCooldown--;
 
-        // Sniper spawn logic (at half health)
-        if (playerHP <= 50 && !hasSniper) pickupSpawned = true;
-
-        // Pickup Logic
-        if (pickupSpawned && player.distance(sniperPickup) < 30) {
-            hasSniper = true;
-            pickupSpawned = false;
-            spawnExplosion(player.x, player.y, Color.YELLOW);
+        // Weapon Pickup Logic
+        if (!weaponAcquired && player.distance(weaponDropPos) < 40) {
+            weaponAcquired = true;
+            currentWeapon = rewardWeapon;
+            ammoInMag = currentWeapon.magSize;
+            screenShake = 20;
+            spawnExplosion(weaponDropPos.x, weaponDropPos.y, currentWeapon.bulletColor);
         }
 
+        // Handle Movement
         double speed = keys[KeyEvent.VK_SHIFT] ? 2.5 : 4.5;
         double moveX = 0, moveY = 0;
         if (keys[KeyEvent.VK_W]) moveY -= 1;
@@ -137,28 +157,40 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (keys[KeyEvent.VK_A]) moveX -= 1;
         if (keys[KeyEvent.VK_D]) moveX += 1;
 
-        if (moveX != 0 && moveY != 0) {
+        if (moveX != 0 || moveY != 0) {
             double length = Math.sqrt(moveX * moveX + moveY * moveY);
             moveX = (moveX / length) * speed;
             moveY = (moveY / length) * speed;
-        } else { moveX *= speed; moveY *= speed; }
+            if (!isColliding(player.x + moveX, player.y, 14)) player.x += moveX;
+            if (!isColliding(player.x, player.y + moveY, 14)) player.y += moveY;
+        }
 
-        if (!isColliding(player.x + moveX, player.y, 14)) player.x += moveX;
-        if (!isColliding(player.x, player.y + moveY, 14)) player.y += moveY;
-
+        // Camera & Aiming
         double targetCamX = getWidth() / 2.0 - player.x;
         double targetCamY = getHeight() / 2.0 - player.y;
         camX += (targetCamX - camX) * 0.15;
         camY += (targetCamY - camY) * 0.15;
-
         playerAngle = Math.atan2((mousePos.y - camY) - player.y, (mousePos.x - camX) - player.x);
+        
         pulse += 0.07f;
         if (muzzleFlashTimer > 0) muzzleFlashTimer--;
 
-        if (keys[KeyEvent.VK_R] && ammoInMag < MAX_MAG && magsReserved > 0 && reloadTimer == 0) reloadTimer = RELOAD_DURATION;
+        // Combat
+        if (isMousePressed && shootCooldown <= 0 && ammoInMag > 0 && reloadTimer <= 0) {
+            bullets.add(new Bullet(player.x, player.y, playerAngle, currentWeapon));
+            ammoInMag--; 
+            muzzleFlashTimer = 3; 
+            shootCooldown = currentWeapon.fireDelay;
+            fireFromRight = !fireFromRight; 
+            screenShake = (currentWeapon == Weapon.SNIPER) ? 15 : 6;
+        }
+
+        if (keys[KeyEvent.VK_R] && ammoInMag < currentWeapon.magSize && magsReserved > 0 && reloadTimer == 0) {
+            reloadTimer = RELOAD_DURATION;
+        }
         if (reloadTimer > 0) {
             reloadTimer--;
-            if (reloadTimer == 0) { ammoInMag = MAX_MAG; magsReserved--; }
+            if (reloadTimer == 0) { ammoInMag = currentWeapon.magSize; magsReserved--; }
         }
 
         for (Detector d : detectors) {
@@ -187,7 +219,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
             for (Detector d : detectors) {
                 if (Point2D.distance(b.x, b.y, d.x, d.y) < 25) {
                     d.hp -= b.damage;
-                    spawnExplosion(d.x, d.y, b.isSniper ? Color.YELLOW : Color.ORANGE);
+                    spawnExplosion(d.x, d.y, b.color);
                     bIter.remove(); break;
                 }
             }
@@ -196,7 +228,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     }
 
     private void spawnExplosion(double x, double y, Color c) {
-        for(int i=0; i<20; i++) particles.add(new Particle(x, y, c));
+        for(int i=0; i<15; i++) particles.add(new Particle(x, y, c));
     }
 
     private boolean isColliding(double x, double y, int r) {
@@ -242,13 +274,14 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
             }
         }
 
-        // Draw Sniper Pickup
-        if (pickupSpawned) {
-            float glow = (float)(Math.abs(Math.sin(pulse*2)) * 100);
-            g2.setColor(new Color(255, 215, 0, (int)(155 + glow)));
-            g2.fillOval((int)sniperPickup.x-15, (int)sniperPickup.y-15, 30, 30);
+        // Draw the Weapon Acquisition Point
+        if (!weaponAcquired) {
+            float glow = (float)(Math.abs(Math.sin(pulse*2)));
+            g2.setColor(new Color(rewardWeapon.bulletColor.getRed(), rewardWeapon.bulletColor.getGreen(), rewardWeapon.bulletColor.getBlue(), (int)(100 + glow * 100)));
+            g2.fillOval((int)weaponDropPos.x - 30, (int)weaponDropPos.y - 30, 60, 60);
             g2.setColor(Color.WHITE);
-            g2.drawString("SNIPER", (int)sniperPickup.x-20, (int)sniperPickup.y-25);
+            g2.setFont(new Font("Monospaced", Font.BOLD, 14));
+            g2.drawString("SECURE: " + rewardWeapon.name, (int)weaponDropPos.x - 50, (int)weaponDropPos.y - 40);
         }
 
         for (Particle p : particles) p.draw(g2);
@@ -257,53 +290,46 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
                 g2.setColor(d.playerSpotted ? new Color(255, 0, 0, 35) : new Color(0, 180, 255, 15));
                 g2.fill(d.lastVisionShape);
             }
-            if (d.playerSpotted) {
-                g2.setStroke(new BasicStroke(5.0f));
-                g2.setColor(new Color(255, 0, 0, 100));
-                g2.drawLine((int)d.x, (int)d.y, (int)player.x, (int)player.y);
-                g2.setStroke(new BasicStroke(1.5f));
-                int laserAlpha = (int)(180 + Math.sin(pulse * 25) * 75);
-                g2.setColor(new Color(255, 255, 255, Math.max(0, Math.min(255, laserAlpha))));
-                g2.drawLine((int)d.x, (int)d.y, (int)player.x, (int)player.y);
-            }
             g2.setColor(d.playerSpotted ? Color.RED : new Color(0, 130, 255));
             g2.fillOval((int)d.x - 15, (int)d.y - 15, 30, 30);
-            g2.setColor(Color.WHITE); g2.drawOval((int)d.x - 15, (int)d.y - 15, 30, 30);
         }
 
         for (Bullet b : bullets) {
-            g2.setColor(b.isSniper ? Color.YELLOW : Color.CYAN);
+            g2.setColor(b.color);
             g2.fillOval((int)b.x - 4, (int)b.y - 4, 8, 8);
         }
 
         // Draw Player
         g2.translate(player.x, player.y);
-        
-        // Player Laser Sight (Sniper Only)
-        if (hasSniper) {
-            g2.setStroke(new BasicStroke(1f));
-            g2.setColor(new Color(255, 255, 0, 100));
+        if (currentWeapon == Weapon.SNIPER) {
+            g2.setColor(new Color(255, 255, 0, 80));
             g2.rotate(playerAngle);
-            g2.drawLine(20, 0, 600, 0);
+            g2.setStroke(new BasicStroke(1));
+            g2.drawLine(20, 0, 1000, 0);
             g2.rotate(-playerAngle);
         }
 
         if (reloadTimer > 0) {
-            g2.setColor(new Color(0, 255, 255, 150));
-            g2.setStroke(new BasicStroke(3));
-            int arc = (int)(360 * ((double)reloadTimer / RELOAD_DURATION));
-            g2.drawArc(-25, -25, 50, 50, 90, arc);
+            g2.setColor(Color.CYAN);
+            g2.drawArc(-25, -25, 50, 50, 90, (int)(360 * ((double)reloadTimer / RELOAD_DURATION)));
         }
 
         g2.rotate(playerAngle);
-        g2.setColor(hasSniper ? new Color(255, 215, 0) : new Color(0, 255, 200));
+        g2.setColor(currentWeapon.bulletColor);
         g2.fillOval(-15, -15, 30, 30);
-        g2.setColor(Color.WHITE); g2.drawOval(-15, -15, 30, 30);
         g2.setColor(Color.BLACK);
-        g2.fillRect(12, fireFromRight ? 6 : -12, hasSniper ? 25 : 16, 6); // Longer barrel for sniper
+        
+        int barrelLen = (currentWeapon == Weapon.SNIPER) ? 35 : (currentWeapon == Weapon.M16) ? 25 : 16;
+        if (currentWeapon == Weapon.DUAL_GUNS) {
+            g2.fillRect(12, 6, 16, 5);
+            g2.fillRect(12, -11, 16, 5);
+        } else {
+            g2.fillRect(12, -3, barrelLen, 6);
+        }
+        
         if (muzzleFlashTimer > 0) {
-            g2.setColor(new Color(255, 255, 180));
-            g2.fillOval(hasSniper ? 35 : 28, fireFromRight ? 4 : -14, 14, 14);
+            g2.setColor(Color.WHITE);
+            g2.fillOval(barrelLen + 8, -6, 12, 12);
         }
         g2.rotate(-playerAngle);
         g2.translate(-player.x, -player.y);
@@ -315,50 +341,45 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         RadialGradientPaint p = new RadialGradientPaint(getWidth()/2f, getHeight()/2f, getWidth()/1.2f, dist, colors);
         g2.setPaint(p);
         g2.fillRect(0,0,getWidth(),getHeight());
-        g2.setColor(new Color(255, 255, 255, 15));
-        for(int i=0; i<getHeight(); i+=4) g2.drawLine(0, i, getWidth(), i);
     }
 
     private void drawHUD(Graphics2D g2) {
         if (!gameInProgress && currentState != State.PAUSED) return;
         g2.setFont(new Font("Monospaced", Font.BOLD, 12));
         int hbY = getHeight() - 90;
+        
         g2.setColor(new Color(0, 20, 40, 200));
         g2.fillRoundRect(20, hbY, 260, 70, 10, 10);
-        g2.setColor(hasSniper ? Color.YELLOW : Color.CYAN);
+        g2.setColor(currentWeapon.bulletColor);
         g2.drawRoundRect(20, hbY, 260, 70, 10, 10);
-        g2.drawString(hasSniper ? "SNIPER_ACTIVE" : "SYS_INTEGRITY", 35, hbY + 20);
-        g2.setColor(Color.DARK_GRAY);
-        g2.fillRect(35, hbY + 30, 200, 12);
-        g2.setColor(playerHP > 30 ? new Color(0, 255, 150) : Color.RED);
-        g2.fillRect(35, hbY + 30, Math.max(0, playerHP * 2), 12);
+        g2.drawString("UNIT_HP", 35, hbY + 20);
+        g2.fillRect(35, hbY + 30, playerHP * 2, 12);
 
-        int amX = getWidth() - 200;
+        int amX = getWidth() - 220;
         g2.setColor(new Color(0, 20, 40, 200));
-        g2.fillRoundRect(amX, hbY, 180, 70, 10, 10);
-        g2.setColor(hasSniper ? Color.YELLOW : Color.CYAN);
-        g2.drawRoundRect(amX, hbY, 180, 70, 10, 10);
-        g2.drawString("ORDNANCE", amX + 15, hbY + 20);
+        g2.fillRoundRect(amX, hbY, 200, 70, 10, 10);
+        g2.setColor(currentWeapon.bulletColor);
+        g2.drawRoundRect(amX, hbY, 200, 70, 10, 10);
+        g2.drawString(currentWeapon.name, amX + 15, hbY + 20);
         g2.setFont(new Font("Monospaced", Font.BOLD, 22));
-        g2.drawString(ammoInMag + " / " + (magsReserved * MAX_MAG), amX + 15, hbY + 50);
+        g2.drawString(ammoInMag + " / " + (magsReserved * currentWeapon.magSize), amX + 15, hbY + 50);
     }
 
     private void drawOverlay(Graphics2D g2) {
-        g2.setColor(new Color(0, 5, 15, 230));
+        g2.setColor(new Color(0, 5, 15, 235));
         g2.fillRect(0, 0, getWidth(), getHeight());
         g2.setColor(Color.CYAN);
         g2.setFont(new Font("Monospaced", Font.BOLD, 50));
         String head = "SHADOW PROTOCOL";
-        if (currentState == State.PAUSED) head = "PAUSED";
         if (currentState == State.DIFFICULTY_SELECT) head = "SELECT DIFFICULTY";
         if (currentState == State.GAME_OVER) head = "UNIT_LOST";
         if (currentState == State.WIN) head = "MISSION_COMPLETE";
         g2.drawString(head, getWidth()/2 - g2.getFontMetrics().stringWidth(head)/2, 200);
+        
         g2.setFont(new Font("Monospaced", Font.PLAIN, 18));
         g2.setColor(Color.WHITE);
-        String sub = "[ENTER] TO INITIALIZE";
-        if (currentState == State.DIFFICULTY_SELECT) sub = "[1] EASY [2] MEDIUM [3] HARD";
-        if (currentState == State.PAUSED) sub = "[P] RESUME OPS";
+        String sub = "[ENTER] TO CONNECT";
+        if (currentState == State.DIFFICULTY_SELECT) sub = "[1] EASY | [2] NORMAL | [3] HARD";
         g2.drawString(sub, getWidth()/2 - g2.getFontMetrics().stringWidth(sub)/2, 350);
     }
 
@@ -366,30 +387,20 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     @Override public void keyPressed(KeyEvent e) { 
         int code = e.getKeyCode();
         if (code < keys.length) keys[code] = true; 
-        if (code == KeyEvent.VK_ENTER) if (currentState != State.PLAYING) currentState = State.DIFFICULTY_SELECT;
+        if (code == KeyEvent.VK_ENTER && currentState != State.PLAYING) currentState = State.DIFFICULTY_SELECT;
         if (currentState == State.DIFFICULTY_SELECT) {
             if (code == KeyEvent.VK_1) applyDifficulty(1);
             if (code == KeyEvent.VK_2) applyDifficulty(2);
             if (code == KeyEvent.VK_3) applyDifficulty(3);
         }
-        if (code == KeyEvent.VK_P) {
-            if (currentState == State.PLAYING) currentState = State.PAUSED;
-            else if (currentState == State.PAUSED) currentState = State.PLAYING;
-        }
     }
     @Override public void keyReleased(KeyEvent e) { if (e.getKeyCode() < keys.length) keys[e.getKeyCode()] = false; }
     @Override public void keyTyped(KeyEvent e) {}
-    @Override public void mousePressed(MouseEvent e) {
-        if (currentState == State.PLAYING && ammoInMag > 0 && reloadTimer <= 0) {
-            bullets.add(new Bullet(player.x, player.y, playerAngle, hasSniper));
-            ammoInMag--; muzzleFlashTimer = 3; fireFromRight = !fireFromRight; 
-            screenShake = hasSniper ? 15 : 6;
-        }
-    }
+    @Override public void mousePressed(MouseEvent e) { isMousePressed = true; }
+    @Override public void mouseReleased(MouseEvent e) { isMousePressed = false; }
     @Override public void mouseMoved(MouseEvent e) { mousePos = e.getPoint(); }
     @Override public void mouseDragged(MouseEvent e) { mousePos = e.getPoint(); }
     @Override public void mouseClicked(MouseEvent e) {}
-    @Override public void mouseReleased(MouseEvent e) {}
     @Override public void mouseEntered(MouseEvent e) {}
     @Override public void mouseExited(MouseEvent e) {}
 }
@@ -408,11 +419,12 @@ class Particle {
 }
 
 class Bullet {
-    double x, y, angle, speed, damage; boolean isSniper;
-    public Bullet(double x, double y, double a, boolean sniper) { 
-        this.x=x; this.y=y; this.angle=a; this.isSniper = sniper;
-        this.speed = sniper ? 35.0 : 20.0;
-        this.damage = sniper ? 150 : 35;
+    double x, y, angle, speed, damage; Color color;
+    public Bullet(double x, double y, double a, GameEngine.Weapon w) { 
+        this.x=x; this.y=y; this.angle=a;
+        this.speed = w.speed;
+        this.damage = w.damage;
+        this.color = w.bulletColor;
     }
     public void move() { x += Math.cos(angle)*speed; y += Math.sin(angle)*speed; }
 }
