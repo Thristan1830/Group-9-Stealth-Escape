@@ -10,7 +10,7 @@ W - MOVES FORWARD
 A - MOVES TOWARDS LEFT
 S - MOVE DOWNWARDS 
 D - MOOVE TOWARDS RIGHT
-You can now press the [P] key at any time during gameplay to freeze the action.
+Esc - Pause the game
 
 left mouse button to shoot
 The "R" Key: to reload
