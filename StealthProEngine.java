@@ -378,12 +378,14 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         if (currentState == State.DIFFICULTY_SELECT) head = "SELECT DIFFICULTY";
         if (currentState == State.GAME_OVER) head = "UNIT_LOST";
         if (currentState == State.WIN) head = "MISSION_COMPLETE";
+        if (currentState == State.PAUSED) head = "PAUSED";
         g2.drawString(head, getWidth()/2 - g2.getFontMetrics().stringWidth(head)/2, 200);
         
         g2.setFont(new Font("Monospaced", Font.PLAIN, 18));
         g2.setColor(Color.WHITE);
         String sub = "[ENTER] TO CONNECT";
         if (currentState == State.DIFFICULTY_SELECT) sub = "[1] EASY | [2] NORMAL | [3] HARD";
+        if (currentState == State.PAUSED) sub = "[ESC] TO RESUME";
         g2.drawString(sub, getWidth()/2 - g2.getFontMetrics().stringWidth(sub)/2, 350);
     }
 
@@ -391,7 +393,11 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     @Override public void keyPressed(KeyEvent e) { 
         int code = e.getKeyCode();
         if (code < keys.length) keys[code] = true; 
-        if (code == KeyEvent.VK_ENTER && currentState != State.PLAYING) currentState = State.DIFFICULTY_SELECT;
+        if (code == KeyEvent.VK_ESCAPE) {
+            if (currentState == State.PLAYING) currentState = State.PAUSED;
+            else if (currentState == State.PAUSED) currentState = State.PLAYING;
+        }
+        if (code == KeyEvent.VK_ENTER && currentState != State.PLAYING && currentState != State.PAUSED) currentState = State.DIFFICULTY_SELECT;
         if (currentState == State.DIFFICULTY_SELECT) {
             if (code == KeyEvent.VK_1) applyDifficulty(1);
             if (code == KeyEvent.VK_2) applyDifficulty(2);
