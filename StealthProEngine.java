@@ -55,6 +55,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private int playerHP = 100;
     private double screenShake = 0;
     private boolean gameInProgress = false;
+    private boolean impossibleMode = false;
     private double camX = 0, camY = 0;
 
     private int ammoInMag = 12;
@@ -106,14 +107,21 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
     private void applyDifficulty(int mode) {
         switch(mode) {
             case 1: 
+                impossibleMode = false;
                 enemyDamageMult = 0.5; enemyRotSpeedMult = 0.6; enemyFovMult = 0.7; 
                 magsReserved = 8; rewardWeapon = Weapon.DUAL_GUNS; break;
             case 2: 
+                impossibleMode = false;
                 enemyDamageMult = 1.0; enemyRotSpeedMult = 1.0; enemyFovMult = 1.0; 
                 magsReserved = 5; rewardWeapon = Weapon.M16; break;
             case 3: 
+                impossibleMode = false;
                 enemyDamageMult = 1.8; enemyRotSpeedMult = 1.6; enemyFovMult = 1.3; 
                 magsReserved = 3; rewardWeapon = Weapon.SNIPER; break;
+            case 4:
+                impossibleMode = true;
+                enemyDamageMult = 2.5; enemyRotSpeedMult = 2.5; enemyFovMult = 1.6;
+                magsReserved = 1; rewardWeapon = Weapon.SNIPER; break;
         }
         startNewGame();
     }
@@ -131,6 +139,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         detectors.add(new Detector(13*TILE_SIZE+40, 5*TILE_SIZE+40, 0.05 * enemyRotSpeedMult, enemyFovMult));
         detectors.add(new Detector(18*TILE_SIZE+40, 1*TILE_SIZE+40, 0.08 * enemyRotSpeedMult, enemyFovMult));
         detectors.add(new Detector(9*TILE_SIZE+40, 9*TILE_SIZE+40, -0.04 * enemyRotSpeedMult, enemyFovMult));
+        for (Detector d : detectors) d.setRoaming(impossibleMode);
         gameInProgress = true;
         currentState = State.PLAYING;
     }
@@ -384,7 +393,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
         g2.setFont(new Font("Monospaced", Font.PLAIN, 18));
         g2.setColor(Color.WHITE);
         String sub = "[ENTER] TO CONNECT";
-        if (currentState == State.DIFFICULTY_SELECT) sub = "[1] EASY | [2] NORMAL | [3] HARD";
+        if (currentState == State.DIFFICULTY_SELECT) sub = "[1] EASY | [2] NORMAL | [3] HARD | [4] IMPOSSIBLE";
         if (currentState == State.PAUSED) sub = "[ESC] TO RESUME";
         g2.drawString(sub, getWidth()/2 - g2.getFontMetrics().stringWidth(sub)/2, 350);
     }
@@ -402,6 +411,7 @@ class GameEngine extends JPanel implements ActionListener, KeyListener, MouseLis
             if (code == KeyEvent.VK_1) applyDifficulty(1);
             if (code == KeyEvent.VK_2) applyDifficulty(2);
             if (code == KeyEvent.VK_3) applyDifficulty(3);
+            if (code == KeyEvent.VK_4) applyDifficulty(4);
         }
     }
     @Override public void keyReleased(KeyEvent e) { if (e.getKeyCode() < keys.length) keys[e.getKeyCode()] = false; }
@@ -443,6 +453,8 @@ class Detector {
     double x, y, angle, rotSpeed, fovMult; int hp = 100;
     boolean playerSpotted = false; 
     boolean isFiringLaser = false; // New field to track firing
+    boolean roaming = false;
+    double targetX = 0, targetY = 0;
     Path2D lastVisionShape;
 
     public Detector(double x, double y, double rs, double fovM) { 
@@ -458,7 +470,8 @@ class Detector {
             while (diff > Math.PI) diff -= Math.PI * 2;
             angle += diff * 0.12; 
         } else { 
-            playerSpotted = false; angle += rotSpeed; 
+            playerSpotted = false; angle += rotSpeed;
+            if (roaming) roam(map, tileSize);
         }
         lastVisionShape = calculateRaycast(map, tileSize);
     }
@@ -476,5 +489,56 @@ class Detector {
             path.lineTo(rX, rY);
         }
         path.closePath(); return path;
+    }
+
+    public void setRoaming(boolean roam) {
+        roaming = roam;
+        if (!roam) return;
+        pickNewTarget(null, 0);
+    }
+
+    private void roam(int[][] map, int tileSize) {
+        if (targetX == 0 && targetY == 0 || Point2D.distance(x, y, targetX, targetY) < 8) {
+            pickNewTarget(map, tileSize);
+        }
+        double dx = targetX - x;
+        double dy = targetY - y;
+        double dist = Math.hypot(dx, dy);
+        if (dist < 1) return;
+        double speed = 1.5;
+        double nx = x + dx / dist * speed;
+        double ny = y + dy / dist * speed;
+        if (isWalkable(map, tileSize, nx, ny)) {
+            x = nx;
+            y = ny;
+            angle = Math.atan2(dy, dx);
+        } else {
+            pickNewTarget(map, tileSize);
+        }
+    }
+
+    private void pickNewTarget(int[][] map, int tileSize) {
+        if (map == null || tileSize == 0) return;
+        for (int attempt = 0; attempt < 40; attempt++) {
+            int row = (int)(Math.random() * map.length);
+            int col = (int)(Math.random() * map[0].length);
+            if (map[row][col] != 1) {
+                double candidateX = col * tileSize + tileSize / 2.0;
+                double candidateY = row * tileSize + tileSize / 2.0;
+                if (Point2D.distance(x, y, candidateX, candidateY) > 40) {
+                    targetX = candidateX;
+                    targetY = candidateY;
+                    return;
+                }
+            }
+        }
+        targetX = x;
+        targetY = y;
+    }
+
+    private boolean isWalkable(int[][] map, int tileSize, double x, double y) {
+        int row = (int)(y / tileSize);
+        int col = (int)(x / tileSize);
+        return row >= 0 && row < map.length && col >= 0 && col < map[0].length && map[row][col] != 1;
     }
 }
